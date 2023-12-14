@@ -4,6 +4,7 @@ TFTP 클라이언트
 
 사용 예제)
 파일 업로드 (PUT): python3 tftpcl.py(파이썬 파일) 203.250.133.88 put text.txt(텍스트 파일)
+
 파일 다운로드 (GET): python3 tftpcl.py(파이썬 파일) 203.250.133.88 get text.txt(텍스트 파일)
 
 구현 세부 정보
