@@ -1,0 +1,137 @@
+#!/usr/bin/python3
+
+import socket
+import argparse
+from struct import pack
+
+DEFAULT_PORT = 69
+BLOCK_SIZE = 512
+DEFAULT_TRANSFER_MODE = 'octet'
+
+OPCODE = {'RRQ': 1, 'WRQ': 2, 'DATA': 3, 'ACK': 4, 'ERROR': 5}#tftp 명령 코드 정의
+MODE = {'netascii': 1, 'octet': 2, 'mail': 3} #전송 모드 정의
+
+ERROR_CODE = {#tftp 오류 코드 정의
+    0: "Not defined, see error message (if any).",
+    1: "File not found.",
+    2: "Access violation.",
+    3: "Disk full or allocation exceeded.",
+    4: "Illegal TFTP operation.",
+    5: "Unknown transfer ID.",
+    6: "File already exists.",
+    7: "No such user."
+}
+
+def send_wrq(filename, mode):#wrq 메시지 생성하는 함수
+    format = f'>h{len(filename)}sB{len(mode)}sB'
+    wrq_message = pack(format, OPCODE['WRQ'], bytes(filename, 'utf-8'), 0, bytes(mode, 'utf-8'), 0)
+    sock.sendto(wrq_message, server_address)
+    print(wrq_message)
+
+def send_rrq(filename, mode):#rrq 메시지 생성하는 함수
+    format = f'>h{len(filename)}sB{len(mode)}sB'
+    rrq_message = pack(format, OPCODE['RRQ'], bytes(filename, 'utf-8'), 0, bytes(mode, 'utf-8'), 0)
+    sock.sendto(rrq_message, server_address)
+    print(rrq_message)
+
+def send_data(block_number, data, new_address):#data 메시지 생성하는 함수
+    format = f'>hh{len(data)}s'
+    data_message = pack(format, OPCODE['DATA'], block_number, data)
+    sock.sendto(data_message, new_address)
+    print(data_message)
+
+def send_ack(seq_num, server):#ack 메시지 생성하는 함수
+    format = f'>hh'
+    ack_message = pack(format, OPCODE['ACK'], seq_num)
+    sock.sendto(ack_message, server)
+    print(ack_message)
+
+parser = argparse.ArgumentParser(description='TFTP client program')#argumentparser 객체 생성
+parser.add_argument(dest="host", help="Server IP address", type=str)#서버 ip 주소를 나타내는 인수
+parser.add_argument(dest="operation", help="get or put a file", type=str)#파일 전송 작업의 종류를 나타내는 인수
+parser.add_argument(dest="filename", help="name of file to transfer", type=str)#전송할 파일의 이름을 나타내는 인수
+parser.add_argument("-p", "--port", dest="port", type=int) #서버 포트를 지정하는 인수
+args = parser.parse_args()#명령행 인수를 파싱하고 결과를 args 객체에 저장
+
+
+# UDP 소켓 생성
+server_ip = args.host
+server_port = DEFAULT_PORT
+server_address = (server_ip, server_port)
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+sock.settimeout(5)#타임아웃 설정 (5초)
+
+mode = DEFAULT_TRANSFER_MODE#파일 전송 모드 설정
+operation = args.operation#파일 전송 작업의 종류 추출
+filename = args.filename#전송할 파일의 이름 추출
+
+if "put" == operation:# put 명령 실행 시
+    send_wrq(filename, mode)#서버에게 파일 쓰기를 요청하는 메시지를 생성하여 전송
+    send_block_number = 1#서버에 보낼 Block number
+    with open(filename, 'rb') as file:#해당파일을 바이너리 읽기 모드 열기
+        while True:
+            try:
+                data, server_new_socket = sock.recvfrom(4)#4바이트 만큼 데이터를 수신
+            except socket.timeout:
+                print("서버로부터 5초 동안 응답이 없습니다!")
+                break
+            opcode = int.from_bytes(data[:2], 'big')#앞에 두개의 정수를 보고 해당 opcode의 의도를 파악
+            if opcode == OPCODE['ACK']:
+                block_number = int.from_bytes(data[2:4], 'big')#block에 대한 번호를 추출
+                if block_number == 0:#만약 ack한 block number가 0이라면 서버에서 수신받을 준비가 되었다는것을 의미
+                    data_block = file.read(512)
+                    print("연결되었습니다")
+                    print(opcode, block_number, send_block_number)
+                    send_data(send_block_number, data_block, server_new_socket)#데이터와 서버측에서 연결을 요청한 주소로 데이터를 전송
+
+                elif block_number == send_block_number:#만약 수신받은 block의 number와 내가 보냈던 send_block_number가 같다면 정상적으로 송신
+                    data_block = file.read(512)#파일의 데이터를 읽어 data_block에 입력
+                    print(opcode, block_number, send_block_number)
+                    send_block_number = send_block_number + 1
+                    if not data_block:#만역 더 이상 보낼 데이터가 없다면
+                        print("데이터를 성공적으로 보냈습니다!")
+                        break
+                    send_data(send_block_number, data_block, server_new_socket)#데이터와 서버측에서 연결을 요청한 주소로 데이터를 송신
+
+            elif opcode == OPCODE['ERROR']:#만약 해당 opcode가 error라면 5라고 해도 가능
+                error_code = int.from_bytes(data[2:4], byteorder='big')
+                print(ERROR_CODE[error_code])#error_code를 출력
+                break
+
+            else:
+                print("변수 발생")
+                break
+
+elif "get" == operation:#get 명령 실행 시
+    send_rrq(filename, mode)#서버에게 파일 읽기를 요청하는 메시지를 생성하여 전송
+    file = open(filename, 'wb')#해당파일을 바이너리 쓰기 모드 열기
+    receive_block_number = 1#서버에서 받을 block의 number
+    while True:
+        data, server_new_socket = sock.recvfrom(516)#서버로 부터 516(512+4(opcode(2)+block(2))을 수신
+        opcode = int.from_bytes(data[:2], 'big')#앞에 두개의 정수를 보고 해당 opcode의 의도를 파악
+        if opcode == OPCODE['DATA']:    #만약 해당 opcode가 DATA라면 3이라고 해도 가능
+            block_number = int.from_bytes(data[2:4], 'big')#block에 대한 번호를 추출
+            if block_number == receive_block_number:#내가 예상한 서버에서 받을 block의 number와 서버에서 보낸 데이터에서의 block number를 비교
+                send_ack(block_number, server_new_socket)#send_ack에 서버에서 보낸 데이터의 block number와 연결된 소겟의 주소를 매개변수에 대입
+                file_block = data[4:] #opcode와 block number를 제외한 나머지부분에 대한 데이터 입력
+                file.write(file_block)
+                receive_block_number = receive_block_number + 1
+                print(file_block.decode())
+            else:
+                send_ack(block_number, server_new_socket)#내가 예상한 서버에서 받을 block number과 서버에서 보낸 데이터의 block number가 다를 경우 데이터를 읽어 오지 못하기때문에 재전송 요청
+
+        elif opcode == OPCODE['ERROR']:#만약 해당 opcode가 error라면 5라고 해도 가능
+            error_code = int.from_bytes(data[2:4], byteorder='big')
+            print(ERROR_CODE[error_code])#error_code를 출력
+            break
+
+        else:
+            break
+
+        if len(file_block) < BLOCK_SIZE:# 파일의 길이를 측정해서 512보다 적으면 종료
+            file.close()
+            print("데이터를 성공적으로 받아오는데 성공했습니다!")
+            break
+else:
+    print("put 또는 get을 입력해주세요!")#put또는 get을 입력하지 않은 경우 입력을 요청하는 메세지 전송
